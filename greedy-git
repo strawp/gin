@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"gin - a Git index file parser"
-version = "0.1.006"
+"greedy-git - a tool for analysing remote git repos"
+version = "0.1"
 
+# https://github.com/strawp/greedy-git
 # https://github.com/git/git/blob/master/Documentation/technical/index-format.txt
 
 import binascii
@@ -9,6 +10,271 @@ import collections
 import json
 import mmap
 import struct
+import urllib.request
+import re
+import os.path
+import operator
+import zlib
+import fnmatch
+import sys
+
+def get_index(baseurl):
+  indexpath = url_to_domain( baseurl ) + "/index"
+  if not os.path.isfile( indexpath ):
+    url = baseurl + "/.git/index"
+    urllib.request.urlretrieve( url, indexpath )
+    if not os.path.isfile( indexpath ):
+      return False
+  
+  # Get json encoded version of index
+  if not os.path.isfile( indexpath + ".json" ):
+    j = parse_file( indexpath, False )
+    f = open( indexpath + ".json", "w" )
+    f.write( j )
+    f.close()
+
+  # Get human readable version of index
+  if not os.path.isfile( indexpath + ".txt" ):
+    txt = parse_file( indexpath, True )
+    f = open( indexpath + ".txt", "w" )
+    f.write( txt )
+    f.close()
+
+  # Produce flat text file list
+  if not os.path.isfile( indexpath + ".lst" ):
+    f = open( indexpath + ".json", "r" )
+    index = json.load( f )
+    f.close()
+    flat = ""
+    for item in index:
+      flat += item.get('name','')+'\n'
+    f = open( indexpath + ".lst", "w" )
+    f.write( flat )
+    f.close()
+
+  # Analyse the files
+  analyse_index( url_to_domain( baseurl ) )
+  return True
+
+def analyse_index( domain ):
+ 
+  if os.path.isfile( domain + "/report.md" ):
+    print( "[I] Already have report file" )
+    return True
+
+  print( "[I} Analysing index file list..." )
+  rpt = "# Analysis of index file\n"
+
+  f = open( domain + "/index.lst", "r" )
+  extensions = {}
+  interesting = []
+  for line in f:
+    line = line.strip()
+    if line == '':
+      continue
+    
+    # Get extension
+    m = re.search( "\.([a-z0-9]+)$", line, re.I )
+    if m:
+      ext = m.group(1)
+      extensions[ext] = extensions.get(ext,1)+1
+
+    # Get interesting
+    m = re.search( "(setting|function|database|backup|config|pass|login|credential|^\.|\/\.|\.(sql|inc|ini|cfg|cnf|zip|gz|tar|7z|rar|bz|cpp|cs|xml|pl|cgi|vb)$)", line, re.I )
+    if m:
+      if line not in interesting:
+        interesting.append(line)
+  f.close()
+  
+  # Sum up file extensions
+  rpt += "\n## Top file extensions\n"
+  sorted_ext = sorted( extensions.items(), key=operator.itemgetter(1), reverse=True )
+  for ext in sorted_ext:
+    rpt += " * " + ext[0] + ": " + str(ext[1]) + '\n'
+
+  # List interesting files
+  rpt += "\n## Interesting files\n" 
+  for name in interesting:
+    rpt += " * " + name + '\n'
+
+  f = open( domain + "/interesting.lst", "w" )
+  f.write( '\n'.join(interesting) )
+  f.close()
+  print( "[I] Interesting files list written to " +  domain + "/interesting.lst" )
+
+  f = open( domain + "/report.md", "w" )
+  f.write( rpt )
+  f.close()
+  print( "[I] Overview report written to " + domain + "/report.md" )
+
+def show_report(baseurl):
+  print( "[I] Showing report:\n" );
+  domain = url_to_domain(baseurl)
+  if not os.path.isfile( domain + "/report.md" ):
+    analyse_index( domain )
+  f = open( domain + "/report.md" )
+  print( f.read() )
+  f.close()
+
+def get_all_files( baseurl ):
+  print( "[W] Getting all known files at " + baseurl + ". This could take a while" )
+  domain = url_to_domain(baseurl)
+  f = open( domain + "/index.lst" )
+  for line in f:
+    line = line.strip()
+    get_file_by_path( baseurl, line )
+  print( "[I] Done." )
+
+
+def get_interesting_files(baseurl):
+  print( "[I] Attempting to get interesting files from " + baseurl + "..." );
+  domain = url_to_domain(baseurl)
+  ipath = domain + "/interesting.lst"
+  if not os.path.isfile( ipath ):
+    analyse_index( domain )
+  if not os.path.isfile( ipath ):
+    print( "[W] No interesting files found to get\n" )
+    return False
+  f = open(ipath,"r")
+  for line in f:
+    line = line.strip()
+    get_file_by_path(baseurl,line)
+
+def get_file_by_path(baseurl,path):
+  print( "[I] Getting " + path )
+  domain = url_to_domain(baseurl)
+  hashstr = get_hash_from_path(domain,path)
+  # No exact match, attempt to use globbing on known files
+  if not hashstr:
+    hashes = get_hashes_by_glob( baseurl,path) 
+    if len(hashes) == 0:
+      print( "[E] No files matched " + path )
+      return False
+    for h in hashes.keys():
+      print( "[I] Getting " + hashes[h] )
+      get_file_by_hash(baseurl,h)
+      unpack_object( domain, h, hashes[h] )
+    return True
+
+  # Get one file
+  if not get_file_by_hash(baseurl,hashstr):
+    return False
+  return unpack_object( domain, hashstr, path )
+
+def get_hashes_by_glob( baseurl, glob ):
+  domain = url_to_domain(baseurl)
+  print( "[I] Getting hashes by file glob, " + glob )
+  f = open( domain + "/index.json", "r" )
+  index = json.load( f )
+  f.close()
+  hashes = {}
+  for item in index:
+    if fnmatch.fnmatch( item.get('name',''), glob ):
+      hashes[item.get('sha1','')] = item.get('name','')
+  return hashes
+
+def get_file_by_hash(baseurl,hashstr):
+  print( "[I] Getting packed file " + hashstr )
+  if not hashstr:
+    return False
+  if hashstr == '':
+    return False
+  domain = url_to_domain( baseurl )
+  dest = domain + "/objects/" + hashstr[:2] + "/" + hashstr[2:]
+  if os.path.isfile( dest ):
+    print( "[I] " + hashstr + " already exists" )
+    return True
+
+  mkdir_p( os.path.dirname( dest ) )
+  url = baseurl + "/.git/objects/" + hashstr[:2] + "/" + hashstr[2:]
+  print( "[I] Attempting to download " + url )
+  urllib.request.urlretrieve( url, dest )
+  if not os.path.isfile( dest ):
+    print( "[E] Failed to download" )
+    return False
+  print( "[I] Size: " + str(os.path.getsize( dest )) )
+  return True
+
+def unpack_object( domain, hashstr, path ):
+  zippath = domain + "/objects/" + hashstr[:2] + "/" + hashstr[2:] 
+  dest = domain + "/files/" + path
+  if os.path.isfile( dest ):
+    print( "[I] " + dest + " already exists" )
+    return True
+  print( "[I] Attempting to unpack to " + dest )
+  mkdir_p(os.path.dirname(dest))
+  try:
+    z = open( zippath, "rb" )
+    f = open(dest,"wb")
+    f.write(zlib.decompress(z.read()))
+    f.close()
+    z.close()
+  except:
+    print( "[E] Failed to decompress file: " + str( sys.exc_info() ))
+    return False
+    pass
+
+  if os.path.isfile( dest ):
+    print( "[I] Decompressed to " + str( os.path.getsize( dest ) ) + " bytes" )
+    return True
+  return False
+
+
+def mkdir_p(path):
+  try:
+    os.makedirs(path,0o777,True)
+  except OSError as exc:
+    if exc.errno == errno.EEXIST and os.path.isdir(path):
+      pass
+    else: raise
+
+
+def get_hash_from_path(domain,path):
+  f = open( domain + "/index.json", "r" )
+  index = json.load( f )
+  f.close()
+  for item in index:
+    if path == item.get('name','').strip():
+      return item.get("sha1","")
+  return False
+
+def get_config(baseurl):
+  confpath = url_to_domain( baseurl ) + "/config"
+  if os.path.isfile( confpath ):
+    print( "[I] Already have config for " + baseurl )
+    return True
+  url = baseurl + "/.git/config"
+  print( "[I] Attempting to download " + url ) 
+  try:
+    response = urllib.request.urlopen(url).read().decode("utf-8")
+  except:
+    print( "[E] Failed to download config file" )
+    return False
+  m = re.search( "repositoryformatversion = \d+", response, re.M )
+  if not m:
+    print( '[E] No valid looking config file found at ' + url )
+    return False
+
+  check_data_dir(url_to_domain( baseurl ) )
+  f = open( confpath, "w" )
+  f.write( response )
+  f.close()
+  return True
+
+def check_data_dir(dirname):
+  if os.path.isdir( dirname ):
+    return True
+
+  os.makedirs(dirname)
+  return os.path.isdir( dirname )
+  
+
+def url_to_domain( url ):
+  p = re.compile( '^([a-z]+):\/\/([^\/]+)' )
+  m = p.match(url)
+  if m:  
+    return m.group(2)
+  return False
 
 def check(boolean, message):
     if not boolean:
@@ -153,6 +419,7 @@ def parse(filename, pretty=True):
         f.close()
 
 def parse_file(arg, pretty=True):
+    rtn = ""
     if pretty:
        properties = {
            "version": "[header]",
@@ -161,65 +428,76 @@ def parse_file(arg, pretty=True):
            "checksum": "[checksum]"
        }
     else:
-        print("[")
+        rtn += "["
 
     for item in parse(arg, pretty=pretty):
         if pretty:
             for key, value in properties.items():
                 if key in item:
-                    print(value)
+                    rtn += value + '\n'
                     break
             else:
-                print("[?]")
+                rtn += "[?]"
 
         if pretty:
             for key, value in item.items():
-                print(" ", key, "=", value)
+                rtn += " " + str(key) + "=" + str(value) + '\n'
         else:
-            print(json.dumps(item))
+            rtn += json.dumps(item) + '\n'
 
         last = "checksum" in item
         if not last:
             if pretty:
-                print()
+                rtn += '\n'
             else:
-                print(",")
+                rtn += ',\n'
 
     if not pretty:
-        print("]")
+        rtn += "]"
+    
+    return rtn
 
 def main():
     import argparse
-    import os.path
     import sys
 
-    parser = argparse.ArgumentParser(description="parse a Git index file")
-    parser.add_argument("-j", "--json", action="store_true",
-        help="output JSON")
-    parser.add_argument("-v", "--version", action="store_true",
-        help="show script version number")
-    parser.add_argument("path", nargs="?", default=".",
-        help="path to a Git repository or index file")
+    parser = argparse.ArgumentParser(description="Analyse a remote .git dir")
+    #parser.add_argument("-j", "--json", action="store_true",
+    #    help="output JSON")
+    parser.add_argument("-v", "--version", action="store_true",help="show script version number")
+    parser.add_argument("-g", "--get", help="Path from repository to get")
+    parser.add_argument("-r", "--report", action="store_true", help="Show report on repository")
+    parser.add_argument("-I", "--get-interesting", action="store_true", help="Download and unpack any interesting files found")
+    parser.add_argument("-a", "--all", action="store_true", help="Get all known files")
+    parser.add_argument("url", help="Base URL of a site to analyse")
     args = parser.parse_args()
 
     if args.version:
-        print("gin " + version)
+        print("greedy-git " + version)
         sys.exit()
 
-    if os.path.isdir(args.path):
-        path = os.path.join(args.path, ".git", "index")
-        if os.path.isfile(path):
-            args.path = path
-        else:
-            print("error: couldn't find a .git/index file to use", file=sys.stderr)
-            print("use -h or --help for some documentation", file=sys.stderr)
-            sys.exit(1)
-
-    if not args.path:
+    if not args.url:
         parser.print_usage()
         sys.exit(2)
 
-    parse_file(args.path, pretty=not args.json)
+    if not get_config(args.url):
+      sys.exit()
+
+    #get the index file
+    if not get_index(args.url):
+      sys.exit()
+
+    if args.get:
+      get_file_by_path(args.url,args.get)
+
+    if args.report:
+      show_report(args.url)
+
+    if args.get_interesting:
+      get_interesting_files(args.url)
+    
+    if args.all:
+      get_all_files(args.url)
 
 if __name__ == "__main__":
     main()
