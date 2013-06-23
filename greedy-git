@@ -22,7 +22,12 @@ def get_index(baseurl):
   indexpath = url_to_domain( baseurl ) + "/index"
   if not os.path.isfile( indexpath ):
     url = baseurl + "/.git/index"
-    urllib.request.urlretrieve( url, indexpath )
+    try:
+      urllib.request.urlretrieve( url, indexpath )
+    except:
+      print( "[E] Couldn't download index" )
+      return False
+
     if not os.path.isfile( indexpath ):
       return False
   
@@ -52,18 +57,21 @@ def get_index(baseurl):
     f.write( flat )
     f.close()
 
+  # Get logs/HEAD
+  get_head_log(baseurl)
+
   # Analyse the files
-  analyse_index( url_to_domain( baseurl ) )
+  write_report( url_to_domain( baseurl ) )
   return True
 
-def analyse_index( domain ):
+def write_report( domain ):
  
   if os.path.isfile( domain + "/report.md" ):
     print( "[I] Already have report file" )
     return True
 
   print( "[I} Analysing index file list..." )
-  rpt = "# Analysis of index file\n"
+  rpt = "# Analysis of " + domain + " git repository\n"
 
   f = open( domain + "/index.lst", "r" )
   extensions = {}
@@ -77,7 +85,7 @@ def analyse_index( domain ):
     m = re.search( "\.([a-z0-9]+)$", line, re.I )
     if m:
       ext = m.group(1)
-      extensions[ext] = extensions.get(ext,1)+1
+      extensions[ext] = extensions.get(ext,0)+1
 
     # Get interesting
     m = re.search( "(setting|function|database|backup|config|pass|login|credential|^\.|\/\.|\.(sql|inc|ini|cfg|cnf|zip|gz|tar|7z|rar|bz|cpp|cs|xml|pl|cgi|vb)$)", line, re.I )
@@ -102,6 +110,35 @@ def analyse_index( domain ):
   f.close()
   print( "[I] Interesting files list written to " +  domain + "/interesting.lst" )
 
+  # Look into logs/HEAD
+  print( "[I] Analysing logs/HEAD" )
+
+  emails = {}
+  credentials = []
+  f = open( domain + "/logs_HEAD" )
+  for line in f:
+    
+    # Emails
+    m = re.search( "<([^@]+)@([^>]+)>", line, re.I )
+    if m: 
+      email = m.group(1) + "@" + m.group(2)
+      emails[email] = emails.get(email,0)+1
+
+    # Credentials?
+    m = re.search( ":\/\/([^:]+):([^@]+)@([^\s]+)", line )
+    if m:
+      credentials.append( m.group(0) )
+
+  # Sort emails by frequency
+  emails = sorted( emails.items(), key=operator.itemgetter(1), reverse=True )
+  rpt += "\n## Top contributing users by log file activity\n"
+  for email in emails:
+    rpt += " * " + email[0] + ": " + str( email[1] ) + '\n' 
+
+  rpt += "\n## Credentials in logs/HEAD\n"
+  for cred in credentials:
+    rpt += " * " + cred + '\n'
+
   f = open( domain + "/report.md", "w" )
   f.write( rpt )
   f.close()
@@ -111,7 +148,7 @@ def show_report(baseurl):
   print( "[I] Showing report:\n" );
   domain = url_to_domain(baseurl)
   if not os.path.isfile( domain + "/report.md" ):
-    analyse_index( domain )
+    write_report( domain )
   f = open( domain + "/report.md" )
   print( f.read() )
   f.close()
@@ -131,7 +168,7 @@ def get_interesting_files(baseurl):
   domain = url_to_domain(baseurl)
   ipath = domain + "/interesting.lst"
   if not os.path.isfile( ipath ):
-    analyse_index( domain )
+    write_report( domain )
   if not os.path.isfile( ipath ):
     print( "[W] No interesting files found to get\n" )
     return False
@@ -260,6 +297,28 @@ def get_config(baseurl):
   f.write( response )
   f.close()
   return True
+
+def get_head_log(baseurl):
+  domain = url_to_domain( baseurl )
+  url = baseurl + "/.git/logs/HEAD"
+  headpath = domain + "/logs_HEAD"
+  if os.path.isfile( headpath ): 
+    print( "[I] Already got logs/HEAD" )
+    return True
+
+  print( "[I] Getting logs/HEAD" ) 
+  try:
+    urllib.request.urlretrieve( url, headpath )
+  except:
+    print( "[E] Failed to download logs/HEAD" )
+    return False
+
+  if os.path.isfile( headpath ): 
+    print( "[I] Downloaded logs/HEAD" )
+    return True
+  
+  print( "[E] Failed to download logs/HEAD" )
+  return False
 
 def check_data_dir(dirname):
   if os.path.isdir( dirname ):
