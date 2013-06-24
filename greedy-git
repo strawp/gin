@@ -18,6 +18,7 @@ import zlib
 import fnmatch
 import sys
 
+# Download the file at <url>/.git/index and then parse it
 def get_index(baseurl):
   indexpath = url_to_domain( baseurl ) + "/index"
   if not os.path.isfile( indexpath ):
@@ -64,6 +65,7 @@ def get_index(baseurl):
   write_report( url_to_domain( baseurl ) )
   return True
 
+# Write out report.md based on files found 
 def write_report( domain ):
  
   if os.path.isfile( domain + "/report.md" ):
@@ -144,6 +146,7 @@ def write_report( domain ):
   f.close()
   print( "[I] Overview report written to " + domain + "/report.md" )
 
+# print report.md to stdout
 def show_report(baseurl):
   print( "[I] Showing report:\n" );
   domain = url_to_domain(baseurl)
@@ -153,6 +156,7 @@ def show_report(baseurl):
   print( f.read() )
   f.close()
 
+# Attempt to download every known file
 def get_all_files( baseurl ):
   print( "[W] Getting all known files at " + baseurl + ". This could take a while" )
   domain = url_to_domain(baseurl)
@@ -162,7 +166,7 @@ def get_all_files( baseurl ):
     get_file_by_path( baseurl, line )
   print( "[I] Done." )
 
-
+# Attempt to download every file in interesting.lst
 def get_interesting_files(baseurl):
   print( "[I] Attempting to get interesting files from " + baseurl + "..." );
   domain = url_to_domain(baseurl)
@@ -177,6 +181,7 @@ def get_interesting_files(baseurl):
     line = line.strip()
     get_file_by_path(baseurl,line)
 
+# Given a base url and a relative path, get the zlib object and unpack it
 def get_file_by_path(baseurl,path):
   print( "[I] Getting " + path )
   domain = url_to_domain(baseurl)
@@ -198,6 +203,7 @@ def get_file_by_path(baseurl,path):
     return False
   return unpack_object( domain, hashstr, path )
 
+# Get a list of matching hashes from a file glob
 def get_hashes_by_glob( baseurl, glob ):
   domain = url_to_domain(baseurl)
   print( "[I] Getting hashes by file glob, " + glob )
@@ -210,6 +216,7 @@ def get_hashes_by_glob( baseurl, glob ):
       hashes[item.get('sha1','')] = item.get('name','')
   return hashes
 
+# Donwload a file given the sha1 hash 
 def get_file_by_hash(baseurl,hashstr):
   print( "[I] Getting packed file " + hashstr )
   if not hashstr:
@@ -225,13 +232,19 @@ def get_file_by_hash(baseurl,hashstr):
   mkdir_p( os.path.dirname( dest ) )
   url = baseurl + "/.git/objects/" + hashstr[:2] + "/" + hashstr[2:]
   print( "[I] Attempting to download " + url )
-  urllib.request.urlretrieve( url, dest )
+  try:
+    urllib.request.urlretrieve( url, dest )
+  except:
+    print( "[E] Failed to download" )
+    return False
+
   if not os.path.isfile( dest ):
     print( "[E] Failed to download" )
     return False
   print( "[I] Size: " + str(os.path.getsize( dest )) )
   return True
 
+# Attempt to unpack an object
 def unpack_object( domain, hashstr, path ):
   zippath = domain + "/objects/" + hashstr[:2] + "/" + hashstr[2:] 
   dest = domain + "/files/" + path
@@ -256,7 +269,7 @@ def unpack_object( domain, hashstr, path ):
     return True
   return False
 
-
+# like "mkdir -p"
 def mkdir_p(path):
   try:
     os.makedirs(path,0o777,True)
@@ -265,7 +278,7 @@ def mkdir_p(path):
       pass
     else: raise
 
-
+# Get a file hash given a definite path name
 def get_hash_from_path(domain,path):
   f = open( domain + "/index.json", "r" )
   index = json.load( f )
@@ -275,6 +288,7 @@ def get_hash_from_path(domain,path):
       return item.get("sha1","")
   return False
 
+# Attempt to download <url>/.git/config and also check it looks like a valid config file before saving
 def get_config(baseurl):
   confpath = url_to_domain( baseurl ) + "/config"
   if os.path.isfile( confpath ):
@@ -298,6 +312,7 @@ def get_config(baseurl):
   f.close()
   return True
 
+# Attempt to download <url>/.git/logs/HEAD
 def get_head_log(baseurl):
   domain = url_to_domain( baseurl )
   url = baseurl + "/.git/logs/HEAD"
@@ -320,6 +335,84 @@ def get_head_log(baseurl):
   print( "[E] Failed to download logs/HEAD" )
   return False
 
+# Attempt to work out the id of the pack file for the project
+def get_pack_id(baseurl):
+  # If the web server has indexes enabled, requesting <url>/.git/objects/pack/ will reveal the file name
+  if os.path.isfile( url_to_domain( baseurl ) + "/pack.id" ):
+    print( "[I] Already have pack id for this repo" )
+    return True
+
+  url = baseurl + "/.git/objects/pack"
+  try:
+    response = urllib.request.urlopen(url).read().decode("utf-8")
+  except:
+    print( "[E] Failed to get pack dir listing" )
+    response = None
+    pass
+  
+  packid = None
+  if response is not None:
+    m = re.findall( "pack-([^\.]+)\.pack", response, re.M )
+    if m:
+      # If it got this far then it's worked!
+      m = list_uniq( m )
+      packid = '\n'.join(m)
+      print( "[!] Holy crap, directory listing enabled in pack dir, got pack ids: " + ', '.join(m) );
+    else:
+      # Attempt to get objects/info/packs
+      url = baseurl + "objects/info/packs"
+      try:
+        response = urllib.request.urlopen(url).read().decode("utf-8")
+      except:
+        print( "[E] Failed to get " + url )
+        return False
+      m = re.findall( "pack-([^\.]+)\.pack", response, re.M )
+      if m:
+        # If it got this far then it's worked!
+        m = list_uniq( m )
+        print( m )
+        packid = '\n'.join(m)
+        print( "[!] Found " + url + "! Pack ids: " + ', '.join(m) );
+
+  if packid is None:
+    return False
+  f = open( url_to_domain(baseurl) + "/pack.id", "w" )
+  f.write( packid )
+  f.close()
+  return True
+
+# Check for info/refs and objects/info/packs to see if the repo is clonable in standard git tools
+def check_if_clonable( baseurl ):
+  print( "[I] Checking if this is clonable" )
+  url = baseurl + "/.git/info/refs"
+  try:
+    response = urllib.request.urlopen(url).read().decode("utf-8")
+  except:
+    print( "[E] Failed to get " + url + " - not clonable" )
+    return False
+
+  m = re.search( "refs\/heads\/master", response )
+  if not m:
+    print( "[E] File at " + url + " doesn't look like a git refs file" )
+    return False
+
+  # Now look for objects/info/packs
+  url = baseurl + "/.git/objects/info/packs" 
+  try:
+    response = urllib.request.urlopen(url).read().decode("utf-8")
+  except:
+    print( "[E] Failed to get " + url + " - not clonable" )
+    return False
+
+  m = re.search( "pack-([^\.]+)\.pack", response, re.M )
+  if not m:
+    print( "[E] File at " + url + " doesn't look like a git packs file" )
+    return False
+
+  print( '[!] This looks like a clonable repository! Try "git clone ' + baseurl + '/.git"')
+  return True
+
+# Check / make the data dir
 def check_data_dir(dirname):
   if os.path.isdir( dirname ):
     return True
@@ -327,13 +420,21 @@ def check_data_dir(dirname):
   os.makedirs(dirname)
   return os.path.isdir( dirname )
   
-
+# Return the domain part of a URL
 def url_to_domain( url ):
   p = re.compile( '^([a-z]+):\/\/([^\/]+)' )
   m = p.match(url)
   if m:  
     return m.group(2)
   return False
+
+def list_uniq(seq): 
+   # order preserving
+   checked = []
+   for e in seq:
+       if e not in checked:
+           checked.append(e)
+   return checked
 
 def check(boolean, message):
     if not boolean:
@@ -528,6 +629,7 @@ def main():
     parser.add_argument("-r", "--report", action="store_true", help="Show report on repository")
     parser.add_argument("-I", "--get-interesting", action="store_true", help="Download and unpack any interesting files found")
     parser.add_argument("-a", "--all", action="store_true", help="Get all known files")
+    parser.add_argument("-c", "--clonable", action="store_true", help="Get check to see if there is enough metadata to just clone the entire repository using git tools")
     parser.add_argument("url", help="Base URL of a site to analyse")
     args = parser.parse_args()
 
@@ -545,6 +647,12 @@ def main():
     #get the index file
     if not get_index(args.url):
       sys.exit()
+
+    if args.clonable and check_if_clonable( args.url ):
+      sys.exit()
+    
+    # Attempt to work out the pack file id
+    get_pack_id(args.url)
 
     if args.get:
       get_file_by_path(args.url,args.get)
