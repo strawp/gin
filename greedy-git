@@ -78,6 +78,7 @@ def write_report( domain ):
   f = open( domain + "/index.lst", "r" )
   extensions = {}
   interesting = []
+  uninteresting = "\.(jpg|png|jpeg|gif|css|js|html)$"
   for line in f:
     line = line.strip()
     if line == '':
@@ -92,6 +93,8 @@ def write_report( domain ):
     # Get interesting
     m = re.search( "(setting|function|database|backup|config|pass|login|credential|^\.|\/\.|\.(sql|inc|ini|cfg|cnf|zip|gz|tar|7z|rar|bz|cpp|cs|xml|pl|cgi|vb)$)", line, re.I )
     if m:
+      m2 = re.search( uninteresting, line, re.I )
+      if m2: continue
       if line not in interesting:
         interesting.append(line)
   f.close()
@@ -101,6 +104,14 @@ def write_report( domain ):
   sorted_ext = sorted( extensions.items(), key=operator.itemgetter(1), reverse=True )
   for ext in sorted_ext:
     rpt += " * " + ext[0] + ": " + str(ext[1]) + '\n'
+  
+  # Strip list down a bit
+  for name in interesting:
+    m = re.search( uninteresting, name, re.I )
+    if m:
+      print( "removing uninteresting " + name )
+      if not interesting.remove(name):
+        print( "didn't remove " + name )
 
   # List interesting files
   rpt += "\n## Interesting files\n" 
@@ -113,33 +124,35 @@ def write_report( domain ):
   print( "[I] Interesting files list written to " +  domain + "/interesting.lst" )
 
   # Look into logs/HEAD
-  print( "[I] Analysing logs/HEAD" )
+  if os.path.isfile( domain + "/logs_HEAD" ):
+    print( "[I] Analysing logs/HEAD" )
 
-  emails = {}
-  credentials = []
-  f = open( domain + "/logs_HEAD" )
-  for line in f:
-    
-    # Emails
-    m = re.search( "<([^@]+)@([^>]+)>", line, re.I )
-    if m: 
-      email = m.group(1) + "@" + m.group(2)
-      emails[email] = emails.get(email,0)+1
+    emails = {}
+    credentials = []
+    f = open( domain + "/logs_HEAD" )
+    for line in f:
+      
+      # Emails
+      m = re.search( "<([^@]+)@([^>]+)>", line, re.I )
+      if m: 
+        email = m.group(1) + "@" + m.group(2)
+        emails[email] = emails.get(email,0)+1
 
-    # Credentials?
-    m = re.search( ":\/\/([^:]+):([^@]+)@([^\s]+)", line )
-    if m:
-      credentials.append( m.group(0) )
+      # Credentials?
+      m = re.search( ":\/\/([^:]+):([^@]+)@([^\s]+)", line )
+      if m:
+        credentials.append( m.group(0) )
 
-  # Sort emails by frequency
-  emails = sorted( emails.items(), key=operator.itemgetter(1), reverse=True )
-  rpt += "\n## Top contributing users by log file activity\n"
-  for email in emails:
-    rpt += " * " + email[0] + ": " + str( email[1] ) + '\n' 
+    # Sort emails by frequency
+    emails = sorted( emails.items(), key=operator.itemgetter(1), reverse=True )
+    rpt += "\n## Top contributing users by log file activity\n"
+    for email in emails:
+      rpt += " * " + email[0] + ": " + str( email[1] ) + '\n' 
 
-  rpt += "\n## Credentials in logs/HEAD\n"
-  for cred in credentials:
-    rpt += " * " + cred + '\n'
+    rpt += "\n## Credentials in logs/HEAD\n"
+    for cred in credentials:
+      rpt += " * " + cred + '\n'
+  else: print( "[E] " + domain + "/logs_HEAD doesn't exist" )
 
   f = open( domain + "/report.md", "w" )
   f.write( rpt )
@@ -323,7 +336,12 @@ def get_head_log(baseurl):
 
   print( "[I] Getting logs/HEAD" ) 
   try:
-    urllib.request.urlretrieve( url, headpath )
+    response = urllib.request.urlopen(url).read().decode("utf-8")
+    m = re.search( "[a-z0-9]{40} [a-z0-9]{40}", response, re.I )
+    if not m: raise
+    f = open( headpath, "w" )
+    f.write( response )
+    f.close()
   except:
     print( "[E] Failed to download logs/HEAD" )
     return False
@@ -381,14 +399,19 @@ def get_pack_id(baseurl):
   f.close()
   return True
 
-# Check for info/refs and objects/info/packs to see if the repo is clonable in standard git tools
-def check_if_clonable( baseurl ):
-  print( "[I] Checking if this is clonable" )
+# Check for info/refs and objects/info/packs to see if the repo is cloneable in standard git tools
+def check_if_cloneable( baseurl ):
+  print( "[I] Checking if this is cloneable" )
+  domain = url_to_domain( baseurl )
+  clonefile = domain + "/cloneable"
+  if os.path.isfile( clonefile ):
+    print("[!] domain " + clonefile + " already exists. Should be cloneable")
+    return True
   url = baseurl + "/.git/info/refs"
   try:
     response = urllib.request.urlopen(url).read().decode("utf-8")
   except:
-    print( "[E] Failed to get " + url + " - not clonable" )
+    print( "[E] Failed to get " + url + " - not cloneable" )
     return False
 
   m = re.search( "refs\/heads\/master", response )
@@ -401,7 +424,7 @@ def check_if_clonable( baseurl ):
   try:
     response = urllib.request.urlopen(url).read().decode("utf-8")
   except:
-    print( "[E] Failed to get " + url + " - not clonable" )
+    print( "[E] Failed to get " + url + " - not cloneable" )
     return False
 
   m = re.search( "pack-([^\.]+)\.pack", response, re.M )
@@ -409,7 +432,10 @@ def check_if_clonable( baseurl ):
     print( "[E] File at " + url + " doesn't look like a git packs file" )
     return False
 
-  print( '[!] This looks like a clonable repository! Try "git clone ' + baseurl + '/.git"')
+  print( '[!] This looks like a cloneable repository! Try "git clone ' + baseurl + '/.git"')
+  f = open( clonefile, "w" )
+  f.write( "git clone " + baseurl + "/.git" )
+  f.close()
   return True
 
 # Check / make the data dir
@@ -629,7 +655,7 @@ def main():
     parser.add_argument("-r", "--report", action="store_true", help="Show report on repository")
     parser.add_argument("-I", "--get-interesting", action="store_true", help="Download and unpack any interesting files found")
     parser.add_argument("-a", "--all", action="store_true", help="Get all known files")
-    parser.add_argument("-c", "--clonable", action="store_true", help="Get check to see if there is enough metadata to just clone the entire repository using git tools")
+    parser.add_argument("-c", "--cloneable", action="store_true", help="Get check to see if there is enough metadata to just clone the entire repository using git tools")
     parser.add_argument("url", help="Base URL of a site to analyse")
     args = parser.parse_args()
 
@@ -648,7 +674,7 @@ def main():
     if not get_index(args.url):
       sys.exit()
 
-    if args.clonable and check_if_clonable( args.url ):
+    if args.cloneable and check_if_cloneable( args.url ):
       sys.exit()
     
     # Attempt to work out the pack file id
