@@ -79,6 +79,7 @@ def write_report( domain ):
   extensions = {}
   interesting = []
   uninteresting = "\.(jpg|png|jpeg|gif|css|js|html)$"
+  middleware = []
   for line in f:
     line = line.strip()
     if line == '':
@@ -90,18 +91,56 @@ def write_report( domain ):
       ext = m.group(1)
       extensions[ext] = extensions.get(ext,0)+1
 
+    # Middleware specific files
+    if re.search( "wp-content", line): middleware.append( "Wordpress (http://wordpress.com/)" )
+    if re.search( "core\/Mage", line): middleware.append( "Magento (http://www.magentocommerce.com/)" )
+    if re.search( "includes\/database\.mysql-common\.inc", line): middleware.append( "Drupal 6 (https://drupal.org/)" )
+    if re.search( "includes\/database\/database\.inc", line): middleware.append( "Drupal 7 (https://drupal.org/)" )
+    if re.search( "db\/tiki_", line): middleware.append( "Tiki Wiki (http://info.tiki.org)" )
+    if re.search( "system\/database\/DB_active_rec\.php", line): middleware.append( "Bit-Wasp (https://github.com/Bit-Wasp)" )
+    if re.search( "activities\/bitrix", line): middleware.append( "Bitrix (http://www.bitrixsoft.com/)" )
+    if re.search( "application\/config\/hooks\.php", line): middleware.append( "CodeIgniter (http://ellislab.com/codeigniter)" )
+    if re.search( "forum\/includes\/adminfunctions\.php", line): middleware.append( "vBulletin (http://www.vbulletin.com/)" )
+    if re.search( "library\/Zend\/Config\.php", line): middleware.append( "Zend Framework (http://framework.zend.com/)" )
+    if re.search( "classes\/Kohana\/DB\.php", line): middleware.append( "Kohana Framework (http://kohanaframework.org/)" )
+    if re.search( "eden-php\/library\/eden", line): middleware.append( "Eden PHP Library (http://www.eden-php.com/)" )
+    if re.search( "sources\/classes\/class_admin_functions\.php", line): middleware.append( "IP.Board 3 (http://www.invisionpower.com/)" )
+    if re.search( "arrowchat\/includes", line): middleware.append( "Arrowchat (http://www.arrowchat.com/)" )
+    if re.search( "smarty\/libs", line): middleware.append( "Smarty Template Engine (http://www.smarty.net/)" )
+    if re.search( "ViewAdmin\/Login\/Form\.php", line): middleware.append( "XenForo forum (http://xenforo.com/)" )
+    if re.search( "templater\/plugins\/function\.assign_ext\.php", line): middleware.append( "X-Cart (http://www.x-cart.com/)" )
+    if re.search( "application\/config\/foreign_chars\.php", line): middleware.append( "CodeIgniter Rest Server (https://github.com/philsturgeon/codeigniter-restserver)" ) 
+    if re.search( "ext\/dam\/locallang_db\.xml", line): middleware.append( "Typo3 CMS (http://typo3.org/)" ) 
+    if re.search( "store\/qs_main\.cgi", line): middleware.append( "QuickStore (http://www.quikstore.com/)" ) 
+    if re.search( "app\/Config\/routes\.php", line): middleware.append( "CakePHP framework (http://cakephp.org/)" ) 
+
     # Get interesting
-    m = re.search( "(setting|function|database|backup|config|pass|login|credential|^\.|\/\.|\.(sql|inc|ini|cfg|cnf|zip|gz|tar|7z|rar|bz|cpp|cs|xml|pl|cgi|vb)$)", line, re.I )
+    m = re.search( "(setting|function|database|backup|config|pass|login|credential|^\.|\/\.|\.(sql|inc|ini|cfg|cnf|zip|gz|tar|7z|rar|bz|cpp|cs|xml|pl|cgi|vb|cfm|py|rb)$)", line, re.I )
     if m:
       m2 = re.search( uninteresting, line, re.I )
       if m2: continue
       if line not in interesting:
         interesting.append(line)
   f.close()
-  
+
+  middleware = list_uniq( middleware )
+
   # Sum up file extensions
-  rpt += "\n## Top file extensions\n"
   sorted_ext = sorted( extensions.items(), key=operator.itemgetter(1), reverse=True )
+  
+  # Determine technology used
+  for ext in sorted_ext:
+    if re.search( "^(php|asp|cfm|pl|py|rb)$", ext[0], re.I ):
+      rpt += "\n## Top language used\n" + ext[0].upper() + "\n"
+      break
+
+  # Any middleware detected
+  rpt += "\n## Middleware detected\n"
+  if len( middleware ) == 0: rpt += "Unknown\n"
+  else: rpt += " * " + "\n * ".join( middleware )+"\n"
+
+  # Write out file extensions
+  rpt += "\n## Top file extensions\n"
   for ext in sorted_ext:
     rpt += " * " + ext[0] + ": " + str(ext[1]) + '\n'
   
