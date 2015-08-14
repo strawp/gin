@@ -22,3 +22,16 @@ optional arguments:
   -a            Get all files referenced in index
 ```
 
+## Hide Your Git Repositories!
+
+**On Apache**
+
+The following `LocationMatch` rule will deny access to any `.git` repository that happens to be servable by an Apache web-server. It also denies access to `.htaccess` and `.htpasswd` files as well as shows an example of denying access to environment configuration files popular in many frameworks. `.env` as a convention is just an example.
+
+```
+<LocationMatch ^.*/(\.ht.*|\.env.*|\.git)/.*$>
+    Order allow,deny
+    Allow from none
+    Deny from all
+</LocationMatch>
+```
